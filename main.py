@@ -17,7 +17,10 @@ from typing import Union
 
 CLOUDFLARE_API_PREFIX = "https://api.cloudflare.com/client/v4"
 
-logging.basicConfig(format="%(asctime)s %(levelname)s: %(message)s", level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s %(levelname)s %(module)s %(funcName)s %(message)s",
+    level=logging.INFO
+)
 
 
 def read_config(config_file: str = "config.ini") -> configparser.ConfigParser:
@@ -119,12 +122,12 @@ class TCPSocketClient(socket.socket):
 
 class TCPSocketServer():
     def __init__(self, config: configparser.ConfigParser):
-        super().__init__(socket.AF_INET, socket.SOCK_STREAM)
         self.config = config
         self.host_public_ip = get_public_ip()
 
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setblocking(False)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.bind((self.config["server"]["ip"], int(self.config["server"]["port"])))
         self.socket.listen()
         logging.info(
@@ -159,10 +162,14 @@ class TCPSocketServer():
 
     def re_listen(self, backlog):
         self.selector.unregister(self.socket)
-        self.socket.shutdown(socket.SHUT_RDWR)
+        try:
+            self.socket.shutdown(socket.SHUT_RDWR)
+        except Exception as e:
+            logging.warning("Error shutting down socket: {}".format(e))
         self.socket.close()
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setblocking(False)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.bind((self.config["server"]["ip"], int(self.config["server"]["port"])))
         self.socket.listen(backlog)
         self.selector.register(self.socket, selectors.EVENT_READ, self.accept_handle)
