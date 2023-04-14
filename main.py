@@ -117,20 +117,24 @@ class TCPSocketClient(socket.socket):
         self.sendall(generate_hash(message_json, salt) + message_json.encode("utf-8") + b"\n")
 
 
-class TCPSocketServer(socket.socket):
+class TCPSocketServer():
     def __init__(self, config: configparser.ConfigParser):
         super().__init__(socket.AF_INET, socket.SOCK_STREAM)
         self.config = config
         self.host_public_ip = get_public_ip()
 
-        self.setblocking(False)
-        self.bind((self.config["server"]["ip"], int(self.config["server"]["port"])))
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setblocking(False)
+        self.socket.bind((self.config["server"]["ip"], int(self.config["server"]["port"])))
+        self.socket.listen()
         logging.info(
-            "VPSKeeper server listening on {}:{}".format(self.config["server"]["ip"], self.config["server"]["port"]))
+            "VPSKeeper server listening on {}:{}".format(self.config["server"]["ip"],
+                                                         self.config["server"]["port"])
+        )
 
         self.start_time = time.time()
         self.membership = ElectionStatus.LOOKING
-        self.servers_records = []
+        self.server_records = []
         self.incoming_connections = {}
         self.incoming_connections_info = {}
         self.outgoing_connections = {}
@@ -139,7 +143,7 @@ class TCPSocketServer(socket.socket):
         self.vote_pool = {}
 
         self.selector = selectors.DefaultSelector()
-        self.selector.register(self, selectors.EVENT_READ, self.accept_handle)
+        self.selector.register(self.socket, selectors.EVENT_READ, self.accept_handle)
 
         self.update_server_records_thread = threading.Thread(target=self.update_server_records)
         self.update_server_records_thread.daemon = True
@@ -153,11 +157,21 @@ class TCPSocketServer(socket.socket):
         self.select_loop_thread.daemon = True
         self.select_loop_thread.start()
 
+    def re_listen(self, backlog):
+        self.selector.unregister(self.socket)
+        self.socket.shutdown(socket.SHUT_RDWR)
+        self.socket.close()
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setblocking(False)
+        self.socket.bind((self.config["server"]["ip"], int(self.config["server"]["port"])))
+        self.socket.listen(backlog)
+        self.selector.register(self.socket, selectors.EVENT_READ, self.accept_handle)
+
     def accept_handle(self, sock, mask):
         connection, address = sock.accept()
         connection.setblocking(False)
         logging.info("Incoming connection from {}".format(address))
-        for record in self.servers_records:
+        for record in self.server_records:
             if record["content"] == address[0]:
                 self.incoming_connections[address] = connection
                 self.incoming_connections_info[address] = {
@@ -222,7 +236,7 @@ class TCPSocketServer(socket.socket):
 
     def establish_connections(self):
         while True:
-            for record in self.servers_records:
+            for record in self.server_records:
                 if record["content"] == self.host_public_ip:
                     continue
                 if record["name"] not in self.outgoing_connections:
@@ -245,10 +259,14 @@ class TCPSocketServer(socket.socket):
             try:
                 logging.info("Updating server records")
                 self.host_public_ip = get_public_ip()
-                self.servers_records = get_server_record(self.config["cloudflare"]["bearer_token"],
-                                                         self.config["cloudflare"]["zone_id"])
-                self.listen(len(self.servers_records))
-                logging.info("Server records updated")
+                server_records_len = len(self.server_records)
+                self.server_records = get_server_record(self.config["cloudflare"]["bearer_token"],
+                                                        self.config["cloudflare"]["zone_id"])
+                if server_records_len != len(self.server_records):
+                    logging.info("Server records updated")
+                    self.re_listen(10)
+                else:
+                    logging.info("Server records unchanged")
                 time.sleep(60)
             except Exception as e:
                 logging.error(e)
