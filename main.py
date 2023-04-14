@@ -120,7 +120,7 @@ class TCPSocketClient(socket.socket):
         self.sendall(generate_hash(message_json, salt) + message_json.encode("utf-8") + b"\n")
 
 
-class TCPSocketServer():
+class TCPSocketServer:
     def __init__(self, config: configparser.ConfigParser):
         self.config = config
         self.host_public_ip = get_public_ip()
@@ -139,9 +139,7 @@ class TCPSocketServer():
         self.membership = ElectionStatus.LOOKING
         self.server_records = []
         self.incoming_connections = {}
-        self.incoming_connections_info = {}
         self.outgoing_connections = {}
-        self.outgoing_connections_info = {}
         self.message_queue = []
         self.vote_pool = {}
 
@@ -184,8 +182,8 @@ class TCPSocketServer():
         logging.info("Incoming connection from {}".format(address))
         for record in self.server_records:
             if record["content"] == address[0]:
-                self.incoming_connections[address] = connection
-                self.incoming_connections_info[address] = {
+                self.incoming_connections[address] = {
+                    "connection": connection,
                     "last_heartbeat": time.time()
                 }
                 self.selector.register(connection, selectors.EVENT_READ, self.message_handle)
@@ -218,22 +216,22 @@ class TCPSocketServer():
             try:
                 data += sock.recv(1024)
             except TimeoutError as e:
-                logging.warning("Timeout when receiving data from {}: {}".format(sock.getpeername(), e))
+                logging.warning("Timeout when receiving data from {}: {}".format(sock.getsockname(), e))
                 return
             except Exception as e:
-                logging.warning("Failed to receive data from {}: {}".format(sock.getpeername(), e))
+                logging.warning("Failed to receive data from {}: {}".format(sock.getsockname(), e))
                 return
         if validate_hash(data[64:].decode("utf-8"), self.config["cloudflare"]["bearer_token"], data[:64]):
             heapq.heappush(self.message_queue, (time.time(), json.loads(data[64:].decode("utf-8"))))
 
     def heartbeat_loop(self):
         while True:
-            for connection in self.outgoing_connections:
+            for connection in self.outgoing_connections.values():
                 try:
                     connection.send_message({"type": "heartbeat"}, self.config["cloudflare"]["bearer_token"])
                 except Exception as e:
-                    logging.warning("Failed to send heartbeat to {}: {}".format(connection.getpeername(), e))
-                    self.outgoing_connections.pop(connection.getpeername()[0])
+                    logging.warning("Failed to send heartbeat to {}: {}".format(connection.getsockname(), e))
+                    self.outgoing_connections.pop(connection.getsockname()[0])
             time.sleep(5)
 
     def handle_looking(self):
@@ -253,11 +251,12 @@ class TCPSocketServer():
                 if record["name"] not in self.outgoing_connections:
                     try:
                         logging.info("Connecting to {}({})".format(record["name"], record["content"]))
-                        self.outgoing_connections[record["name"]] = TCPSocketClient(
-                            ip=record["content"],
-                            port=int(self.config["server"]["port"])
-                        )
-                        self.outgoing_connections_info[record["name"]] = {
+                        self.outgoing_connections[record["content"]] = {
+                            "connection": TCPSocketClient(
+                                ip=record["content"],
+                                port=int(self.config["server"]["port"]
+                                         )
+                            ),
                             "last_heartbeat": time.time()
                         }
                         logging.info("Connected to {}({})".format(record["name"], record["content"]))
