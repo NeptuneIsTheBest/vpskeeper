@@ -226,7 +226,7 @@ class TCPSocketServer:
 
     def heartbeat_loop(self):
         while True:
-            for key, value in self.outgoing_connections:
+            for key, value in self.outgoing_connections.items():
                 connection = value["connection"]
                 try:
                     connection.send_message({"type": "heartbeat"}, self.config["cloudflare"]["bearer_token"])
