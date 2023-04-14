@@ -160,6 +160,10 @@ class TCPSocketServer():
         self.select_loop_thread.daemon = True
         self.select_loop_thread.start()
 
+        self.heartbeat_loop_thread = threading.Thread(target=self.heartbeat_loop)
+        self.heartbeat_loop_thread.daemon = True
+        self.heartbeat_loop_thread.start()
+
     def re_listen(self, backlog):
         self.selector.unregister(self.socket)
         try:
