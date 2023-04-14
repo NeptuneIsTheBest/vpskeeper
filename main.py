@@ -77,7 +77,7 @@ def get_public_ip() -> Union[str, None]:
     url = "https://checkip.amazonaws.com"
     request = urllib.request.Request(url)
     response = urllib.request.urlopen(request)
-    return response.read().decode("utf-8")
+    return response.read().decode("utf-8").strip()
 
 
 def get_timestamp() -> float:
@@ -182,6 +182,7 @@ class TCPSocketServer(socket.socket):
                     continue
                 if record["name"] not in self.connection_pool:
                     try:
+                        logging.info("Connecting to {}({})".format(record["name"], record["content"]))
                         self.connection_pool[record["name"]] = TCPSocketClient(ip=record["content"],
                                                                                port=int(self.config["server"]["port"]))
                         logging.info("Connected to {}".format(record["name"]))
