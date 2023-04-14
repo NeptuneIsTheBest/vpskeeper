@@ -216,21 +216,22 @@ class TCPSocketServer:
             try:
                 data += sock.recv(1024)
             except TimeoutError as e:
-                logging.warning("Timeout when receiving data from {}: {}".format(sock.getsockname(), e))
+                logging.warning("Timeout when receiving data from {}: {}".format(sock.getsockname()[0], e))
                 return
             except Exception as e:
-                logging.warning("Failed to receive data from {}: {}".format(sock.getsockname(), e))
+                logging.warning("Failed to receive data from {}: {}".format(sock.getsockname()[0], e))
                 return
         if validate_hash(data[64:].decode("utf-8"), self.config["cloudflare"]["bearer_token"], data[:64]):
             heapq.heappush(self.message_queue, (time.time(), json.loads(data[64:].decode("utf-8"))))
 
     def heartbeat_loop(self):
         while True:
-            for connection in self.outgoing_connections.values():
+            for oc in self.outgoing_connections.values():
+                connection = oc["connection"]
                 try:
                     connection.send_message({"type": "heartbeat"}, self.config["cloudflare"]["bearer_token"])
                 except Exception as e:
-                    logging.warning("Failed to send heartbeat to {}: {}".format(connection.getsockname(), e))
+                    logging.warning("Failed to send heartbeat to {}: {}".format(connection.getsockname()[0], e))
                     self.outgoing_connections.pop(connection.getsockname()[0])
             time.sleep(5)
 
