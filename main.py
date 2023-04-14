@@ -11,7 +11,6 @@ import hashlib
 import heapq
 import threading
 import socket
-import socketserver
 import selectors
 
 from typing import Union
@@ -131,9 +130,16 @@ class TCPSocketServer(socket.socket):
 
         self.start_time = time.time()
         self.membership = ElectionStatus.LOOKING
-        self.connection_pool = {}
-        self.message_queue = []
         self.servers_records = []
+        self.incoming_connections = {}
+        self.incoming_connections_info = {}
+        self.outgoing_connections = {}
+        self.outgoing_connections_info = {}
+        self.message_queue = []
+        self.vote_pool = {}
+
+        self.selector = selectors.DefaultSelector()
+        self.selector.register(self, selectors.EVENT_READ, self.accept_handle)
 
         self.update_server_records_thread = threading.Thread(target=self.update_server_records)
         self.update_server_records_thread.daemon = True
@@ -143,11 +149,26 @@ class TCPSocketServer(socket.socket):
         self.establish_connections_thread.daemon = True
         self.establish_connections_thread.start()
 
-    def readline(self):
-        buffer = b""
-        while not buffer.endswith(b"\n"):
-            buffer += self.recv(1)
-        return buffer
+        self.select_loop_thread = threading.Thread(target=self.select_loop)
+        self.select_loop_thread.daemon = True
+        self.select_loop_thread.start()
+
+    def accept_handle(self, sock, mask):
+        connection, address = sock.accept()
+        connection.setblocking(False)
+        logging.info("Incoming connection from {}".format(address))
+        for record in self.servers_records:
+            if record["content"] == address[0]:
+                self.incoming_connections[address] = connection
+                self.incoming_connections_info[address] = {
+                    "last_heartbeat": time.time()
+                }
+                self.selector.register(connection, selectors.EVENT_READ, self.message_handle)
+                logging.info("Connection from {} is allowed".format(address))
+                return
+        logging.info("Connection from {} is not allowed".format(address))
+        connection.shutdown(socket.SHUT_RDWR)
+        connection.close()
 
     def loop(self):
         while True:
@@ -157,14 +178,38 @@ class TCPSocketServer(socket.socket):
                 self.handle_following()
             elif self.membership == ElectionStatus.LEADING:
                 self.handle_leading()
-            else:
-                logging.error("Unknown status: {}".format(self.membership))
             time.sleep(5)
 
-    def message_handle(self):
-        data = self.readline().strip()
+    def select_loop(self):
+        while True:
+            events = self.selector.select()
+            for key, mask in events:
+                callback = key.data
+                callback(key.fileobj, mask)
+
+    def message_handle(self, sock, mask):
+        data = b""
+        while not data.endswith(b"\n"):
+            try:
+                data += sock.recv(1024)
+            except TimeoutError as e:
+                logging.warning("Timeout when receiving data from {}: {}".format(sock.getpeername(), e))
+                return
+            except Exception as e:
+                logging.warning("Failed to receive data from {}: {}".format(sock.getpeername(), e))
+                return
         if validate_hash(data[64:].decode("utf-8"), self.config["cloudflare"]["bearer_token"], data[:64]):
             heapq.heappush(self.message_queue, (time.time(), json.loads(data[64:].decode("utf-8"))))
+
+    def heartbeat_loop(self):
+        while True:
+            for connection in self.outgoing_connections:
+                try:
+                    connection.send_message({"type": "heartbeat"}, self.config["cloudflare"]["bearer_token"])
+                except Exception as e:
+                    logging.warning("Failed to send heartbeat to {}: {}".format(connection.getpeername(), e))
+                    self.outgoing_connections.pop(connection.getpeername()[0])
+            time.sleep(5)
 
     def handle_looking(self):
         pass
@@ -180,15 +225,20 @@ class TCPSocketServer(socket.socket):
             for record in self.servers_records:
                 if record["content"] == self.host_public_ip:
                     continue
-                if record["name"] not in self.connection_pool:
+                if record["name"] not in self.outgoing_connections:
                     try:
                         logging.info("Connecting to {}({})".format(record["name"], record["content"]))
-                        self.connection_pool[record["name"]] = TCPSocketClient(ip=record["content"],
-                                                                               port=int(self.config["server"]["port"]))
-                        logging.info("Connected to {}".format(record["name"]))
+                        self.outgoing_connections[record["name"]] = TCPSocketClient(
+                            ip=record["content"],
+                            port=int(self.config["server"]["port"])
+                        )
+                        self.outgoing_connections_info[record["name"]] = {
+                            "last_heartbeat": time.time()
+                        }
+                        logging.info("Connected to {}({})".format(record["name"], record["content"]))
                     except Exception as e:
-                        logging.error(e)
-            time.sleep(5)
+                        logging.warning("Failed to connect to {}({}): {}".format(record["name"], record["content"], e))
+            time.sleep(10)
 
     def update_server_records(self):
         while True:
@@ -210,6 +260,11 @@ class TCPSocketServer(socket.socket):
 
     @membership.setter
     def membership(self, value):
+        if not isinstance(value, ElectionStatus):
+            if isinstance(value, int):
+                value = ElectionStatus(value)
+            else:
+                raise TypeError("Membership must be an instance of ElectionStatus")
         self.election_status = value
         logging.info("Membership changed to {}".format(self.election_status))
 
@@ -226,4 +281,7 @@ def main_loop(config: configparser.ConfigParser):
 
 
 if __name__ == "__main__":
+    if not os.path.exists("config.ini"):
+        logging.error("config.ini not found")
+        exit(1)
     main_loop(read_config())
