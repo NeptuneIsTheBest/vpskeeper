@@ -249,7 +249,7 @@ class TCPSocketServer:
             for record in self.server_records:
                 if record["content"] == self.host_public_ip:
                     continue
-                if record["name"] not in self.outgoing_connections:
+                if record["content"] not in self.outgoing_connections:
                     try:
                         logging.info("Connecting to {}({})".format(record["name"], record["content"]))
                         self.outgoing_connections[record["content"]] = {
