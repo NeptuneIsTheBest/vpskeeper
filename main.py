@@ -37,7 +37,7 @@ def get_cloudflare_dns_records(bearer_token: str, zone_id: str) -> Union[dict, N
         "Content-Type": "application/json",
     }
     request = urllib.request.Request(url, headers=headers)
-    response = urllib.request.urlopen(request)
+    response = urllib.request.urlopen(request, timeout=5)
     return json.loads(response.read().decode("utf-8"))
 
 
@@ -78,7 +78,7 @@ def get_server_record(bearer_token: str, zone_id: str) -> Union[list, None]:
 def get_public_ip() -> Union[str, None]:
     url = "https://checkip.amazonaws.com"
     request = urllib.request.Request(url)
-    response = urllib.request.urlopen(request)
+    response = urllib.request.urlopen(request, timeout=5)
     return response.read().decode("utf-8").strip()
 
 
@@ -179,7 +179,7 @@ class TCPSocketServer:
     def accept_handle(self, sock, mask):
         connection, address = sock.accept()
         connection.setblocking(False)
-        logging.info("Incoming connection from {}".format(address))
+        logging.info("Incoming connection from {}".format(address[0]))
         for record in self.server_records:
             if record["content"] == address[0]:
                 self.incoming_connections[address] = {
@@ -187,9 +187,9 @@ class TCPSocketServer:
                     "last_heartbeat": time.time()
                 }
                 self.selector.register(connection, selectors.EVENT_READ, self.message_handle)
-                logging.info("Connection from {} is allowed".format(address))
+                logging.info("Connection from {} is allowed".format(address[0]))
                 return
-        logging.info("Connection from {} is not allowed".format(address))
+        logging.info("Connection from {} is not allowed".format(address[0]))
         connection.shutdown(socket.SHUT_RDWR)
         connection.close()
 
@@ -226,7 +226,7 @@ class TCPSocketServer:
 
     def heartbeat_loop(self):
         while True:
-            for key, value in self.outgoing_connections.items():
+            for key, value in list(self.outgoing_connections.items()):
                 connection = value["connection"]
                 try:
                     connection.send_message({"type": "heartbeat"}, self.config["cloudflare"]["bearer_token"])
@@ -255,7 +255,8 @@ class TCPSocketServer:
                         self.outgoing_connections[record["content"]] = {
                             "connection": TCPSocketClient(
                                 ip=record["content"],
-                                port=int(self.config["server"]["port"])
+                                port=int(self.config["server"]["port"]),
+                                timeout=3
                             ),
                             "last_heartbeat": time.time()
                         }
