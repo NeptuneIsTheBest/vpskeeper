@@ -216,23 +216,23 @@ class TCPSocketServer:
             try:
                 data += sock.recv(1024)
             except TimeoutError as e:
-                logging.warning("Timeout when receiving data from {}: {}".format(sock.getsockname()[0], e))
+                logging.warning("Timeout when receiving data from {}: {}".format(sock.getpeername()[0], e))
                 return
             except Exception as e:
-                logging.warning("Failed to receive data from {}: {}".format(sock.getsockname()[0], e))
+                logging.warning("Failed to receive data from {}: {}".format(sock.getpeername()[0], e))
                 return
         if validate_hash(data[64:].decode("utf-8"), self.config["cloudflare"]["bearer_token"], data[:64]):
             heapq.heappush(self.message_queue, (time.time(), json.loads(data[64:].decode("utf-8"))))
 
     def heartbeat_loop(self):
         while True:
-            for oc in self.outgoing_connections.values():
-                connection = oc["connection"]
+            for key, value in self.outgoing_connections:
+                connection = value["connection"]
                 try:
                     connection.send_message({"type": "heartbeat"}, self.config["cloudflare"]["bearer_token"])
                 except Exception as e:
-                    logging.warning("Failed to send heartbeat to {}: {}".format(connection.getsockname()[0], e))
-                    self.outgoing_connections.pop(connection.getsockname()[0])
+                    logging.warning("Failed to send heartbeat to {}: {}".format(key, e))
+                    self.outgoing_connections.pop(key)
             time.sleep(5)
 
     def handle_looking(self):
@@ -255,8 +255,7 @@ class TCPSocketServer:
                         self.outgoing_connections[record["content"]] = {
                             "connection": TCPSocketClient(
                                 ip=record["content"],
-                                port=int(self.config["server"]["port"]
-                                         )
+                                port=int(self.config["server"]["port"])
                             ),
                             "last_heartbeat": time.time()
                         }
