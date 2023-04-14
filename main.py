@@ -73,6 +73,13 @@ def get_server_record(bearer_token: str, zone_id: str) -> Union[list, None]:
     return dns_records
 
 
+def get_public_ip() -> Union[str, None]:
+    url = "https://checkip.amazonaws.com"
+    request = urllib.request.Request(url)
+    response = urllib.request.urlopen(request)
+    return response.read().decode("utf-8")
+
+
 def get_timestamp() -> float:
     now = datetime.datetime.now()
     if now.second > 30:
@@ -122,7 +129,7 @@ class TCPSocketServer(socket.socket):
             "VPSKeeper server listening on {}:{}".format(self.config["server"]["ip"], self.config["server"]["port"]))
 
         self.start_time = time.time()
-        self.status = ElectionStatus.LOOKING
+        self.membership = ElectionStatus.LOOKING
         self.connection_pool = {}
         self.message_queue = []
         self.servers_records = []
@@ -143,14 +150,14 @@ class TCPSocketServer(socket.socket):
 
     def loop(self):
         while True:
-            if self.status == ElectionStatus.LOOKING:
+            if self.membership == ElectionStatus.LOOKING:
                 self.handle_looking()
-            elif self.status == ElectionStatus.FOLLOWING:
+            elif self.membership == ElectionStatus.FOLLOWING:
                 self.handle_following()
-            elif self.status == ElectionStatus.LEADING:
+            elif self.membership == ElectionStatus.LEADING:
                 self.handle_leading()
             else:
-                logging.error("Unknown status: {}".format(self.status))
+                logging.error("Unknown status: {}".format(self.membership))
             time.sleep(5)
 
     def message_handle(self):
@@ -170,6 +177,8 @@ class TCPSocketServer(socket.socket):
     def establish_connections(self):
         while True:
             for record in self.servers_records:
+                if record["content"] == self.host_public_ip:
+                    continue
                 if record["name"] not in self.connection_pool:
                     try:
                         self.connection_pool[record["name"]] = TCPSocketClient(ip=record["content"],
@@ -183,6 +192,7 @@ class TCPSocketServer(socket.socket):
         while True:
             try:
                 logging.info("Updating server records")
+                self.host_public_ip = get_public_ip()
                 self.servers_records = get_server_record(self.config["cloudflare"]["bearer_token"],
                                                          self.config["cloudflare"]["zone_id"])
                 self.listen(len(self.servers_records))
@@ -191,6 +201,15 @@ class TCPSocketServer(socket.socket):
             except Exception as e:
                 logging.error(e)
                 time.sleep(5)
+
+    @property
+    def membership(self):
+        return self.election_status
+
+    @membership.setter
+    def membership(self, value):
+        self.election_status = value
+        logging.info("Membership changed to {}".format(self.election_status))
 
 
 def main_loop(config: configparser.ConfigParser):
