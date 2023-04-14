@@ -122,6 +122,7 @@ class TCPSocketServer(socket.socket):
     def __init__(self, config: configparser.ConfigParser):
         super().__init__(socket.AF_INET, socket.SOCK_STREAM)
         self.config = config
+        self.host_public_ip = get_public_ip()
 
         self.setblocking(False)
         self.bind((self.config["server"]["ip"], int(self.config["server"]["port"])))
