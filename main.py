@@ -150,7 +150,7 @@ class TCPSocketServer:
         self.update_server_records_thread.daemon = True
         self.update_server_records_thread.start()
 
-        self.establish_connections_thread = threading.Thread(target=self.establish_connections)
+        self.establish_connections_thread = threading.Thread(target=self.establish_connections_loop)
         self.establish_connections_thread.daemon = True
         self.establish_connections_thread.start()
 
@@ -222,18 +222,33 @@ class TCPSocketServer:
                 logging.warning("Failed to receive data from {}: {}".format(sock.getpeername()[0], e))
                 return
         if validate_hash(data[64:].decode("utf-8"), self.config["cloudflare"]["bearer_token"], data[:64]):
-            heapq.heappush(self.message_queue, (time.time(), json.loads(data[64:].decode("utf-8"))))
+            json_data = json.loads(data[64:].decode("utf-8"))
+            if json_data["type"] == "heartbeat":
+                self.incoming_connections[sock.getpeername()[0]]["last_heartbeat"] = time.time()
+            elif json_data["type"] == "vote":
+                pass
+            elif json_data["type"] == "request":
+                pass
+            elif json_data["type"] == "response":
+                pass
+            else:
+                logging.warning("Unknown message type from {}: {}".format(sock.getpeername()[0], json_data["type"]))
+            heapq.heappush(self.message_queue, (time.time(), json_data))
 
     def heartbeat_loop(self):
         while True:
             for key, value in list(self.outgoing_connections.items()):
+                ip = key
                 connection = value["connection"]
-                try:
-                    connection.send_message({"type": "heartbeat"}, self.config["cloudflare"]["bearer_token"])
-                except Exception as e:
-                    logging.warning("Failed to send heartbeat to {}: {}".format(key, e))
-                    self.outgoing_connections.pop(key)
+                threading.Thread(target=self.send_heartbeat, args=(ip, connection)).start()
             time.sleep(5)
+
+    def send_heartbeat(self, ip, connection):
+        try:
+            connection.send_message({"type": "heartbeat"}, self.config["cloudflare"]["bearer_token"])
+        except Exception as e:
+            logging.warning("Failed to send heartbeat to {}: {}".format(ip, e))
+            self.outgoing_connections.pop(ip)
 
     def handle_looking(self):
         pass
@@ -244,26 +259,28 @@ class TCPSocketServer:
     def handle_leading(self):
         pass
 
-    def establish_connections(self):
+    def establish_connections_loop(self):
         while True:
             for record in self.server_records:
-                if record["content"] == self.host_public_ip:
-                    continue
-                if record["content"] not in self.outgoing_connections:
-                    try:
-                        logging.info("Connecting to {}({})".format(record["name"], record["content"]))
-                        self.outgoing_connections[record["content"]] = {
-                            "connection": TCPSocketClient(
-                                ip=record["content"],
-                                port=int(self.config["server"]["port"]),
-                                timeout=3
-                            ),
-                            "last_heartbeat": time.time()
-                        }
-                        logging.info("Connected to {}({})".format(record["name"], record["content"]))
-                    except Exception as e:
-                        logging.warning("Failed to connect to {}({}): {}".format(record["name"], record["content"], e))
+                threading.Thread(target=self.establish_connection, args=(record,)).start()
             time.sleep(10)
+
+    def establish_connection(self, server_record):
+        if server_record["content"] != self.host_public_ip:
+            if server_record["content"] not in self.outgoing_connections:
+                try:
+                    logging.info("Connecting to {}({})".format(server_record["name"], server_record["content"]))
+                    self.outgoing_connections[server_record["content"]] = {
+                        "connection": TCPSocketClient(
+                            ip=server_record["content"],
+                            port=int(self.config["server"]["port"]),
+                            timeout=3
+                        ),
+                        "last_heartbeat": time.time()
+                    }
+                    logging.info("Connected to {}({})".format(server_record["name"], server_record["content"]))
+                except Exception as e:
+                    logging.warning("Failed to connect to {}({}): {}".format(server_record["name"], server_record["content"], e))
 
     def update_server_records(self):
         while True:
