@@ -70,7 +70,18 @@ def simple_server_filter(dns_records: list) -> Union[list, None]:
 def get_server_record(bearer_token: str, zone_id: str) -> Union[list, None]:
     assert bearer_token and zone_id, "bearer_token and zone_id must be provided"
     dns_records = simple_server_filter(handle_cloudflare_dns_records(get_cloudflare_dns_records(bearer_token, zone_id)))
-    return dns_records.sort()
+    return dns_records
+
+
+def compare_server_records(server_records: list, new_server_records: list) -> bool:
+    if isinstance(server_records, list) is False or isinstance(new_server_records, list) is False:
+        return False
+    if len(server_records) != len(new_server_records):
+        return False
+    for record in server_records:
+        if record not in new_server_records:
+            return False
+    return True
 
 
 def get_public_ip() -> Union[str, None]:
@@ -134,12 +145,12 @@ class TCPSocketServer:
         )
 
         self.start_time = time.time()
-        self.membership = ElectionStatus.LOOKING
+        self.election_status = ElectionStatus.LOOKING
         self.server_records = []
         self.incoming_connections = {}
         self.outgoing_connections = {}
         self.message_queue = []
-        self.vote_pool = {}
+        self.vote_pool = []
 
         self.selector = selectors.DefaultSelector()
         self.selector.register(self.socket, selectors.EVENT_READ, self.accept_handle)
@@ -193,11 +204,11 @@ class TCPSocketServer:
 
     def loop(self):
         while True:
-            if self.membership == ElectionStatus.LOOKING:
+            if self.election_status == ElectionStatus.LOOKING:
                 self.handle_looking()
-            elif self.membership == ElectionStatus.FOLLOWING:
+            elif self.election_status == ElectionStatus.FOLLOWING:
                 self.handle_following()
-            elif self.membership == ElectionStatus.LEADING:
+            elif self.election_status == ElectionStatus.LEADING:
                 self.handle_leading()
             time.sleep(5)
 
@@ -221,7 +232,9 @@ class TCPSocketServer:
                 return
         if validate_hash(data[64:].decode("utf-8"), self.config["cloudflare"]["bearer_token"], data[:64]):
             json_data = json.loads(data[64:].decode("utf-8"))
-            if json_data["type"] == "heartbeat":
+            if json_data["type"] == "hello":
+                self.incoming_connections[sock.getpeername()[0]]["election_status"] = ElectionStatus(json_data["election_status"])
+            elif json_data["type"] == "heartbeat":
                 self.incoming_connections[sock.getpeername()[0]]["last_heartbeat"] = time.time()
             elif json_data["type"] == "vote":
                 pass
@@ -268,14 +281,17 @@ class TCPSocketServer:
             if server_record["content"] not in self.outgoing_connections:
                 try:
                     logging.info("Connecting to {}({})".format(server_record["name"], server_record["content"]))
+                    connection = TCPSocketClient(ip=server_record["content"],
+                                                 port=int(self.config["server"]["port"]),
+                                                 timeout=3)
                     self.outgoing_connections[server_record["content"]] = {
-                        "connection": TCPSocketClient(
-                            ip=server_record["content"],
-                            port=int(self.config["server"]["port"]),
-                            timeout=3
-                        ),
+                        "connection": connection,
                         "last_heartbeat": time.time()
                     }
+                    connection.send_message(
+                        {"type": "hello", "election_status": self.election_status.value},
+                        self.config["cloudflare"]["bearer_token"]
+                    )
                     logging.info("Connected to {}({})".format(server_record["name"], server_record["content"]))
                 except Exception as e:
                     logging.warning(
@@ -288,7 +304,7 @@ class TCPSocketServer:
                 self.host_public_ip = get_public_ip()
                 new_server_records = get_server_record(self.config["cloudflare"]["bearer_token"],
                                                        self.config["cloudflare"]["zone_id"])
-                if self.server_records != new_server_records:
+                if not compare_server_records(self.server_records, new_server_records):
                     logging.info("Server records updated")
                     self.server_records = new_server_records
                     self.re_listen(len(self.server_records))
@@ -300,18 +316,18 @@ class TCPSocketServer:
                 time.sleep(5)
 
     @property
-    def membership(self):
-        return self.election_status
+    def election_status(self):
+        return self.__election_status
 
-    @membership.setter
-    def membership(self, value):
+    @election_status.setter
+    def election_status(self, value):
         if not isinstance(value, ElectionStatus):
             if isinstance(value, int):
                 value = ElectionStatus(value)
             else:
                 raise TypeError("Membership must be an instance of ElectionStatus")
-        self.election_status = value
-        logging.info("Membership changed to {}".format(self.election_status))
+        self.__election_status = value
+        logging.info("Membership changed to {}".format(self.__election_status))
 
 
 def main_loop(config: configparser.ConfigParser):
