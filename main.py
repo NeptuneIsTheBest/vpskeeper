@@ -69,10 +69,8 @@ def simple_server_filter(dns_records: list) -> Union[list, None]:
 
 def get_server_record(bearer_token: str, zone_id: str) -> Union[list, None]:
     assert bearer_token and zone_id, "bearer_token and zone_id must be provided"
-    dns_records = get_cloudflare_dns_records(bearer_token, zone_id)
-    dns_records = handle_cloudflare_dns_records(dns_records)
-    dns_records = simple_server_filter(dns_records)
-    return dns_records
+    dns_records = simple_server_filter(handle_cloudflare_dns_records(get_cloudflare_dns_records(bearer_token, zone_id)))
+    return dns_records.sort()
 
 
 def get_public_ip() -> Union[str, None]:
@@ -241,7 +239,7 @@ class TCPSocketServer:
                 ip = key
                 connection = value["connection"]
                 threading.Thread(target=self.send_heartbeat, args=(ip, connection)).start()
-            time.sleep(5)
+            time.sleep(10)
 
     def send_heartbeat(self, ip, connection):
         try:
@@ -280,19 +278,20 @@ class TCPSocketServer:
                     }
                     logging.info("Connected to {}({})".format(server_record["name"], server_record["content"]))
                 except Exception as e:
-                    logging.warning("Failed to connect to {}({}): {}".format(server_record["name"], server_record["content"], e))
+                    logging.warning(
+                        "Failed to connect to {}({}): {}".format(server_record["name"], server_record["content"], e))
 
     def update_server_records(self):
         while True:
             try:
                 logging.info("Updating server records")
                 self.host_public_ip = get_public_ip()
-                server_records_len = len(self.server_records)
-                self.server_records = get_server_record(self.config["cloudflare"]["bearer_token"],
-                                                        self.config["cloudflare"]["zone_id"])
-                if server_records_len != len(self.server_records):
+                new_server_records = get_server_record(self.config["cloudflare"]["bearer_token"],
+                                                       self.config["cloudflare"]["zone_id"])
+                if self.server_records != new_server_records:
                     logging.info("Server records updated")
-                    self.re_listen(10)
+                    self.server_records = new_server_records
+                    self.re_listen(len(self.server_records))
                 else:
                     logging.info("Server records unchanged")
                 time.sleep(60)
